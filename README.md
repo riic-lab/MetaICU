@@ -1,0 +1,82 @@
+# MetaICU
+
+A multi-database ICU data-processing library. AmsterdamUMCdb and MIMIC-IV share the iCareFM-style hourly-grid interface; AmsterdamUMCdb also provides the MEDS/tokenized pipeline.
+
+The source tree is dataset-first:
+
+- `metaicu/aumcdb/`: AUMCdb common I/O, grid, and MEDS/tokenized pipelines.
+- `metaicu/mimiciv/`: MIMIC-IV common I/O and grid pipeline.
+- `metaicu/common/grid/`: dataset-independent grid contracts and preprocessing mechanics.
+- `metaicu/joint_grid/`: pooled cross-dataset fitting and joint-output assembly.
+- `metaicu/cli/`: public dataset-dispatching grid commands and their configurations.
+
+## Quick Start
+
+```bash
+git clone https://github.com/AmirV97/MetaICU.git
+cd MetaICU
+uv pip install --python /path/to/python -e .
+```
+
+For the full step-by-step workflow (external retrieval, vocabulary build, pre-MEDS, MEDS, tokenization, all CLI commands and flags), see **[docs/user_runbook.md](docs/user_runbook.md)**.
+
+## Current Status
+
+Implemented:
+
+- external retrieval/setup helper
+- reviewed supplied-vocabulary installation, with an optional raw-data rebuild/retrace mode
+- iCareFM-style grid feature manifest and reviewed-manifest parser
+- shared Latin-1-preserving raw parquet cache for the grid and tokenized pipelines
+- raw CSV to hourly grid extraction with unit harmonization, broad physiological outlier removal, train-fitted scaling, imputation, and categorical encoding
+- grid per-feature presence masks (`{tag}__observed`), derived TTE targets (P/F ratio, urine-rate-per-weight), static-demographic prepend onto every hourly row, deterministic physical column order, subject-exclusive splits, emitted TTE-target manifests, and post-write integrity audits
+- deterministic subject splits as a pre-MEDS substage
+- source-preserving pre-MEDS extraction
+- train-derived high-frequency numeric inventory
+- rare-but-dense numeric binning for sparse CRRT-like dense streams
+- causal mean-binned numeric pre-MEDS outputs
+- bounded/full MEDS-like conversion for a supplied pre-MEDS directory
+- split-aware MEDS conversion for train/val/test
+- train-frozen numeric quantile boundaries across train/val/test, corrected with the same itemid-level unit/sentinel/plausibility fixes as the grid pipeline (`tokenized/meds/numeric_qc.py`, ported from `grid/build/unit_conversion_overrides.py` and `plausibility_bounds.py`)
+- train-frozen token vocabulary and tokenized safetensor outputs
+
+## Tests
+
+GitHub Actions runs Ruff, unit tests, and fixture-based integration tests on
+every push and pull request. Real-data tests remain opt-in because CI has no
+access to AmsterdamUMCdb.
+
+Install the development tools:
+
+```bash
+uv sync --extra dev
+```
+
+Run the same checks locally:
+
+```bash
+uv run ruff check src tests scripts
+uv run ruff format --check src tests scripts
+uv run python -m unittest discover -s tests/unit -t . -v
+uv run python -m unittest discover -s tests/integration -t . -v
+```
+
+Fast unit tests:
+
+```bash
+python -m unittest discover -s tests/unit -t . -v
+```
+
+Fixture-based integration tests:
+
+```bash
+python -m unittest discover -s tests/integration -t . -v
+```
+
+See [tests/README.md](tests/README.md) for the complete suite and opt-in real-data regressions.
+
+More detail:
+
+- `docs/user_runbook.md`
+- `docs/policy_decisions.md`
+- `docs/amsterdam_vocab_documentation.md`

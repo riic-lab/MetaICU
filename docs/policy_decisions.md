@@ -1,0 +1,85 @@
+# Vocabulary Policy Decisions
+
+This file explains the supplied vocabulary artifact:
+
+```text
+mappings/aumc_supplied_vocab.csv
+```
+
+The vocabulary is source-preserving: every Amsterdam source token is kept, even when it is not emitted as a model token.
+
+## Schema
+
+| Column | Meaning |
+|---|---|
+| `dataset` | Source dataset name. |
+| `source_table` | Amsterdam source table, e.g. `numericitems`, `listitems`, `drugitems`. |
+| `source_itemid` | Amsterdam item ID. |
+| `source_valueid` | Amsterdam categorical value ID, mainly for `listitems`. |
+| `source_unitid` | Amsterdam unit ID, mainly for `numericitems`. |
+| `source_ordercategoryid` | Drug/order category ID, mainly for `drugitems`. |
+| `source_label` | Original Amsterdam item label. |
+| `source_value` | Original categorical value label, when applicable. |
+| `source_unit` | Original unit label, when applicable. |
+| `source_token` | Stable source-token key used for joins and traceability. |
+| `row_count` | Number of raw/pre-MEDS rows represented by this source token. |
+| `harmonized_token` | Model-facing destination token if emitted. |
+| `token_role` | Runtime role, e.g. `dynamic_event`, `dynamic_event/lab`, `static_context/diagnosis_context`, `metadata_only`. |
+| `emit_as_model_token` | Whether this source token should become a model event/context token. |
+| `non_drug_drugitem_class` | Semantic class for non-medication rows found in `drugitems`. |
+| `target_vocabulary` | Target vocabulary, when mapped to a standard concept/code. |
+| `target_concept_id` | OMOP concept ID, when available. **Known quirk: 23 rows carry the literal integer `0` here, not null. `0` is OMOP's own "No matching concept" sentinel, not a real resolvable concept -- treat it as unmapped, not as a resolved id. Filtering on `target_concept_id.is_not_null()` alone will incorrectly include these 23 rows.** This is now enforced by `vocab_pipeline/policies/zero_sentinel.py`. |
+| `target_code` | Native target code, e.g. ATC or LOINC code, when available. |
+| `target_label` | Human-readable target concept/code label. |
+| `mapping_source` | Evidence source used for the mapping/policy. |
+| `match_strength` | Mapping strength or policy confidence category. |
+| `mapping_confidence` | Coarse confidence label for downstream review/debugging. |
+
+## Core Decisions
+
+- `emit_as_model_token=False` rows are kept for traceability but excluded from first-pass model input.
+- `freetextitems` are excluded from first-pass model input.
+- `procedureorderitems` are excluded because they represent order/intent, not completed clinical events.
+- `drugitems` is not pure medication. Nutrition, fluids, food/drink, blood products, research rows, and device/order metadata are handled separately.
+- Medication tokens use ATC-backed hierarchical tokens where possible, e.g. `MEDICATION//C07//A//B02`. Runtime can truncate these to coarser ATC levels.
+- Dose, route, rate, and solution details are not emitted as model tokens in the current version.
+- Food/nutrition details are collapsed to broad categories such as `NUTRITION//ORAL`, `NUTRITION//ENTERAL`, or `NUTRITION//PARENTERAL`.
+- Fluids and blood products are collapsed to broad clinically useful categories.
+- Device/support states are kept only when useful for ICU trajectory modeling.
+- Workflow, contact/social/admin, discharge/outcome metadata, care targets, bed type, tube size, and similar low-value metadata are dropped from model input.
+- Labs are identified by Amsterdam source token prefix `LAB//`, not by LOINC alone. These use `token_role=dynamic_event/lab`.
+- Non-lab LOINC-backed rows, such as fluid-output concepts, are not labeled as labs.
+- Standard concept tokens use `OMOP_CONCEPT//{vocabulary_id}//{concept_id}` where the OMOP vocabulary metadata is available, e.g. `OMOP_CONCEPT//LOINC//...` or `OMOP_CONCEPT//SNOMED//...`.
+- Diagnosis/context rows are static clinical context. Runtime should deduplicate repeated diagnosis facts per admission.
+- GCS eye/motor/verbal component rows are emitted directly as `dynamic_event/score_component`, following OpenICU-style component concepts. Runtime should not derive a GCS total by default.
+- BPS component rows are not emitted directly; a later runtime stage may derive total BPS when complete component bundles are available.
+- High-frequency numeric streams are identified from the train split during pre-MEDS and written as causal mean-binned `numericitems_binned` datasets for each split. Empty windows are not emitted.
+- Rare-but-dense numeric streams are also binned when they have high row burden and the observed frequency CI is above the high-resolution threshold, even if they appear in fewer admissions than the usual inventory `min_groups` gate. The default rare-dense gate is 2 sampled admission/item groups, which catches CRRT settings/limits that are dense only among CRRT patients.
+- Selected categorical state streams are state-change deduplicated in pre-MEDS. Defaults include ventilation mode, CRRT modality, rhythm, oxygen/admin route, NIV program status, sputum state, pupil state, selected score components/final scores, ectopy, chest-drain state, and EVD state. The policy keeps the first value and later value changes per admission/item.
+- All emitted non-medication numeric values are converted to train-frozen Q1-Q10 tokens during split-aware MEDS conversion.
+- MEDS stores each quantile-coded numeric event with a `//Q1` through `//Q10` suffix and a null `numeric_value`. Tokenization decomposes it into two adjacent tokens: the base concept identity followed by one shared `Q1`-`Q10` token.
+- Tokenization defaults to `vocab_scope=train_only`: validation/test codes not present in train are mapped to `UNK` and audited. `vocab_scope=full_data` is available for descriptive/full-cohort inventories, but should not be used for leakage-sensitive model evaluation.
+- Tokenized timelines are ICU admission/stay level by default, keyed by `(subject_id, hadm_id)`. The tokenizer also supports subject-level timelines via `run.analysis_unit=subject`. Patient/admission identity is preserved in the safetensor ID arrays and `timeline_index.parquet`.
+- Medication ATC tokens are stored at the most detailed level in the supplied vocab, but can be truncated at tokenization time, e.g. `MEDICATION//C07//A//B02` -> `MEDICATION//C07//A`.
+- Pre-ICU events belonging to the same hospital/ICU admission remain in that admission's timeline.
+- A recorded death is assigned to at most one ICU admission. In-ICU deaths emit `MEDS_DEATH` at administrative ICU discharge because Amsterdam death dates are day-granular. Post-discharge deaths emit `MEDS_DEATH` only when recorded within 24 hours after discharge; later deaths remain metadata-only.
+- Canonical subject/admission metadata is stored as Parquet in `data/metadata/` and copied to `data/tokenized/metadata/`.
+
+## Open Runtime Decisions
+
+- Re-run bounded QC after the aggressive rare-dense binning default and inspect any remaining super-long admission/stay timelines before full-scale training.
+- Full split-aware MEDS and tokenization have been run across 23,106 ICU-admission timelines. The full integrity audit validates vocabulary and tensor counts, timestamp ordering, terminal-token behavior, and sampled MEDS-to-token tracebacks; its sequence-length and timeline-duration histograms are full-cohort results.
+
+## Runtime Notes
+
+The vocabulary is not itself a tokenized dataset. It is the policy artifact consumed by later MEDS/tokenization code.
+
+Runtime code should:
+
+1. join source rows to this vocabulary using typed source keys;
+2. emit only rows with `emit_as_model_token=True`;
+3. emit static context once per admission/stay;
+4. emit dynamic events at source timestamps;
+5. compute temporal phase at runtime;
+6. consume `numericitems_binned` when present, fall back to raw `numericitems` otherwise, and apply train-frozen numeric quantiles during MEDS conversion.
+7. tokenize MEDS with train-frozen token IDs and configurable timeline boundaries: admission/stay-level by default, subject-level when `run.analysis_unit=subject`.

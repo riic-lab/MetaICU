@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "metaicu"
+version = "0.1.0"
+description = "Multi-dataset ICU preprocessing pipelines for grid and tokenized representations"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Amir Vahdani", email = "a.m.vahdani@gmail.com" }]
+dependencies = [
+  "hydra-core>=1.3",
+  "matplotlib>=3.7",
+  "omegaconf>=2.3",
+  "pandas>=2.0",
+  "numpy>=1.24",
+  "polars[rtcompat]>=1.0",
+  "pyarrow>=14.0",
+  "PyYAML>=6.0",
+  "scikit-learn>=1.3",
+  "safetensors>=0.5",
+  "torch>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.16,<0.17",
+]
+
+[project.scripts]
+build-amsterdam-vocab = "metaicu.aumcdb.tokenized.cli.build_amsterdam_vocab:main"
+build-aumc-split = "metaicu.aumcdb.tokenized.cli.build_amsterdam_split:main"
+build-aumc-premeds = "metaicu.aumcdb.tokenized.cli.build_amsterdam_premeds:main"
+audit-aumc-premeds = "metaicu.aumcdb.tokenized.cli.audit_amsterdam_premeds:main"
+audit-aumc-tokenized = "metaicu.aumcdb.tokenized.cli.audit_amsterdam_tokenized:main"
+build-aumc-meds = "metaicu.aumcdb.tokenized.cli.build_amsterdam_meds:main"
+build-aumc-tokenized = "metaicu.aumcdb.tokenized.cli.build_amsterdam_tokenized:main"
+retrieve-aumc-externals = "metaicu.aumcdb.tokenized.cli.retrieve_externals:main"
+grid_build_manifest = "metaicu.cli.grid_build_manifest:main"
+# grid_build_dataset (and the per-pipeline metaicu.{aumcdb,mimiciv}.grid.cli.grid_build_dataset
+# entry points it wraps) is the standard Int64-ID, single-dataset build. Use
+# grid_build_joint_dataset only when pooled cross-dataset fitting or one namespaced output is needed.
+grid_build_dataset = "metaicu.cli.grid_build_dataset:main"
+grid_build_joint_dataset = "metaicu.joint_grid.cli.build_dataset:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"metaicu.aumcdb.tokenized" = ["configs/*.yaml", "configs/vocab_scope/*.yaml", "data/*.csv"]
+"metaicu.aumcdb.tokenized.vocab_pipeline" = [
+  "data/policy_manifests/*.csv",
+  "data/policy_manifests/*.json",
+]
+"metaicu.aumcdb.grid" = ["configs/*.yaml", "data/*.csv", "data/*.md"]
+"metaicu.mimiciv.grid" = ["configs/*.yaml", "data/*.csv", "data/*.md"]
+"metaicu.common.grid" = ["data/*.csv"]
+"metaicu.cli" = ["configs/*.yaml", "configs/dataset/*.yaml"]
+"metaicu.joint_grid" = ["configs/*.yaml"]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "C901"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

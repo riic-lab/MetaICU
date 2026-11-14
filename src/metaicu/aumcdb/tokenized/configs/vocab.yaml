@@ -1,0 +1,35 @@
+# Hydra config for the cleaned AmsterdamUMCdb vocabulary pipeline.
+# The default installs the reviewed supplied vocab. Set run.mode=rebuild to
+# retrace it from raw source tokens and reviewed policy manifests.
+
+step: build_vocab
+
+paths:
+  parent_dir: null
+  raw_data_dir: null
+  pre_meds_dir: null
+  audit_dir: null
+  supplied_vocab: null       # reviewed packaged artifact unless explicitly overridden
+  output_vocab: null
+  external_root: null
+  omop_vocab_dir: null
+  source_vocab: audits/vocab_pipeline_source_vocab.csv
+  mapping_evidence: audits/vocab_pipeline_mapping_evidence.csv
+  candidates: audits/vocab_pipeline_candidates.csv
+
+run:
+  mode: supplied             # supplied (default) or rebuild
+  overwrite: false
+  allow_unresolved_source_tokens: false
+
+source_vocab:
+  dataset: AmsterdamUMCdb
+  input_format: raw
+  max_rows_per_table: null
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: .
+  output_subdir: null
