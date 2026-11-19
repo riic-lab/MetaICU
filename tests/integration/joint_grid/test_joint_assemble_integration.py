@@ -46,9 +46,7 @@ def _write_cohort_output(
     for split, admission_ids in by_split.items():
         split_dir = output_dir / split
         split_dir.mkdir(parents=True, exist_ok=True)
-        shard = grid.filter(pl.col("admissionid").is_in(admission_ids)).sort(
-            ["admissionid", "hour"]
-        )
+        shard = grid.filter(pl.col("admissionid").is_in(admission_ids))
         shard.write_parquet(split_dir / "0.parquet")
 
     metadata = pl.DataFrame(
@@ -75,10 +73,11 @@ def _write_cohort_output(
 
 
 class WriteJointOutputsIntegrationTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        root = Path(self.tmp.name)
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.tmp.cleanup)
+        root = Path(cls.tmp.name)
 
         # Deliberate raw-ID collisions: admissionid=10 and subject_id=1 both appear in AUMCdb AND
         # MIMIC-IV's own native ID spaces (the two cohorts number admissions/patients
@@ -91,8 +90,8 @@ class WriteJointOutputsIntegrationTests(unittest.TestCase):
                 {"admissionid": 20, "subject_id": 2, "split": "val"},
             ],
             grid_rows=[
-                {"admissionid": 10, "hour": 0, "hr": 80.0, "hr__observed": 1},
                 {"admissionid": 10, "hour": 1, "hr": 82.0, "hr__observed": 1},
+                {"admissionid": 10, "hour": 0, "hr": 80.0, "hr__observed": 1},
                 {"admissionid": 20, "hour": 0, "hr": 90.0, "hr__observed": 1},
             ],
             tte_targets={"targets": [], "missing": ["hr"], "derived": {}},
@@ -113,13 +112,13 @@ class WriteJointOutputsIntegrationTests(unittest.TestCase):
             tte_targets={"targets": ["hr"], "missing": [], "derived": {}},
         )
 
-        self.joint_output_dir = root / "joint" / "output"
-        self.joint_audit_dir = root / "joint" / "audit"
-        self.outputs = write_joint_outputs(
-            cohort_output_dirs={"aumcdb": aumc_dir, "mimic_iv": mimic_dir},
-            joint_output_dir=self.joint_output_dir,
-            joint_audit_dir=self.joint_audit_dir,
-            patients_per_file=1000,
+        cls.joint_output_dir = root / "joint" / "output"
+        cls.joint_audit_dir = root / "joint" / "audit"
+        cls.outputs = write_joint_outputs(
+            cohort_output_dirs={"mimic_iv": mimic_dir, "aumcdb": aumc_dir},
+            joint_output_dir=cls.joint_output_dir,
+            joint_audit_dir=cls.joint_audit_dir,
+            patients_per_file=1,
             weights={"aumcdb": 0.4, "mimic_iv": 0.6},
             n_train_admissions_by_cohort={"aumcdb": 1, "mimic_iv": 1},
         )
@@ -146,7 +145,22 @@ class WriteJointOutputsIntegrationTests(unittest.TestCase):
         by_split = metadata.group_by("split").len().sort("split")
         counts = dict(zip(by_split["split"].to_list(), by_split["len"].to_list()))
         self.assertEqual(counts, {"test": 1, "train": 2, "val": 1})
-        self.assertTrue((self.joint_output_dir / "train" / "0.parquet").exists())
+        train = metadata.filter(pl.col("split") == "train").sort("shard_file")
+        self.assertEqual(
+            train.select("admissionid", "shard_file", "n_rows").rows(),
+            [
+                ("aumcdb_10", "train/0.parquet", 2),
+                ("mimic_iv_10", "train/1.parquet", 1),
+            ],
+        )
+        for admission_id, shard_file, n_rows in train.select(
+            "admissionid", "shard_file", "n_rows"
+        ).iter_rows():
+            shard = pl.read_parquet(self.joint_output_dir / shard_file)
+            self.assertEqual(
+                shard.select("admissionid", "hour").rows(),
+                [(admission_id, hour) for hour in range(n_rows)],
+            )
 
     def test_summary_reports_pre_namespacing_collisions(self) -> None:
         summary = json.loads(self.outputs["summary"].read_text())

@@ -1,11 +1,7 @@
-"""Integration test for metaicu.joint_grid.cli.build_dataset's own orchestration logic
-(_pad_pre_scale_grid, _compute_pooled_scalers) plus the real finish_grid_dataset/write_joint_outputs
-chain -- exercised directly against two hand-built PreScaleGrid objects (bypassing raw extraction,
-which Phase 2's own tests already cover) so the NEW Phase 5 glue code runs for real, not mocked.
+"""Check pooled scaling and joint output on two grids with different feature availability.
 
-Deliberately gives the two cohorts a tag-parity GAP ("crp" real only in mimic_iv) to exercise
-cross-cohort schema padding, and >= MIN_TRAIN_VALUES real per-tag values so pooled_mean_std/
-pooled_fit_treatment actually fit (not skip) -- verified against hand-computed expectations.
+Only MIMIC-IV observes CRP in this fixture. Both grids include enough training
+measurements to fit observation and treatment scalers.
 """
 
 from __future__ import annotations
@@ -22,17 +18,9 @@ from metaicu.aumcdb.grid.build.build_workflow import GridDatasetConfig as AumcCo
 from metaicu.aumcdb.grid.build.build_workflow import (
     finish_grid_dataset as finish_aumcdb,
 )
-from metaicu.common.grid.impute import (
-    capture_presence_mask as aumcdb_capture_presence_mask,
-    materialize_structural_zero_columns as aumcdb_materialize_structural_zero,
-)
 from metaicu.mimiciv.grid.build.build_workflow import GridDatasetConfig as MimicConfig
 from metaicu.mimiciv.grid.build.build_workflow import (
     finish_grid_dataset as finish_mimiciv,
-)
-from metaicu.common.grid.impute import (
-    capture_presence_mask as mimiciv_capture_presence_mask,
-    materialize_structural_zero_columns as mimiciv_materialize_structural_zero,
 )
 from metaicu.joint_grid.cli.build_dataset import (
     _compute_pooled_scalers,
@@ -253,32 +241,17 @@ class GridBuildJointDatasetOrchestrationTests(unittest.TestCase):
 
         pre_scale_by_cohort = {"aumcdb": aumc_pre_scale, "mimic_iv": mimic_pre_scale}
 
-        # --- Phase 1: cross-cohort schema padding (real dispatcher helper). ---
         union_registry = compute_union_matches(
             {name: p.matches for name, p in pre_scale_by_cohort.items()}
         )
         cls.union_registry = union_registry
-        _pad_pre_scale_grid(
-            "aumcdb",
-            aumc_pre_scale,
-            union_registry,
-            aumcdb_materialize_structural_zero,
-            aumcdb_capture_presence_mask,
-        )
-        _pad_pre_scale_grid(
-            "mimic_iv",
-            mimic_pre_scale,
-            union_registry,
-            mimiciv_materialize_structural_zero,
-            mimiciv_capture_presence_mask,
-        )
+        for name, grid in pre_scale_by_cohort.items():
+            _pad_pre_scale_grid(name, grid, union_registry)
 
-        # --- Phase 3: pooled statistics (real dispatcher helper). ---
         cls.n_train = {"aumcdb": 1, "mimic_iv": 1}
         cls.weights = compute_cohort_weights(cls.n_train)
         cls.pooled_scalers = _compute_pooled_scalers(pre_scale_by_cohort, cls.weights)
 
-        # --- Phase 2: finish each cohort's own staging build with the shared pooled scalers. ---
         finish_aumcdb(
             cls.aumc_config, aumc_pre_scale, external_scalers=cls.pooled_scalers
         )
@@ -286,7 +259,6 @@ class GridBuildJointDatasetOrchestrationTests(unittest.TestCase):
             cls.mimic_config, mimic_pre_scale, external_scalers=cls.pooled_scalers
         )
 
-        # --- Phase 4: joint assembly. ---
         cls.joint_output_dir = root / "joint" / "data"
         cls.joint_audit_dir = root / "joint" / "audit"
         cls.outputs = write_joint_outputs(
@@ -370,18 +342,6 @@ class GridBuildJointDatasetOrchestrationTests(unittest.TestCase):
         self.assertEqual(aumc_scalers["hr"]["mean"], mimic_scalers["hr"]["mean"])
         self.assertEqual(aumc_scalers["hr"]["std"], mimic_scalers["hr"]["std"])
 
-    def test_joint_output_namespaces_and_records_source(self) -> None:
-        metadata = pl.read_csv(self.outputs["metadata"])
-        self.assertEqual(
-            sorted(metadata["admissionid"].to_list()),
-            ["aumcdb_10", "aumcdb_20", "mimic_iv_100", "mimic_iv_200"],
-        )
-        source_by_admission = dict(
-            zip(metadata["admissionid"].to_list(), metadata["source"].to_list())
-        )
-        self.assertEqual(source_by_admission["aumcdb_10"], "aumcdb")
-        self.assertEqual(source_by_admission["mimic_iv_100"], "mimic_iv")
-
     def test_native_ids_trace_back_to_the_original_per_cohort_values(self) -> None:
         metadata = pl.read_csv(self.outputs["metadata"])
         native_by_admission = dict(
@@ -417,11 +377,6 @@ class GridBuildJointDatasetOrchestrationTests(unittest.TestCase):
     def test_joint_feature_schema_has_all_three_tags(self) -> None:
         schema = json.loads(self.outputs["feature_schema"].read_text())
         self.assertEqual({"hr", "crp", "nor"} & set(schema), {"hr", "crp", "nor"})
-
-    def test_joint_integrity_audit_passes(self) -> None:
-        integrity = json.loads(self.outputs["integrity"].read_text())
-        self.assertTrue(integrity["passed"])
-        self.assertEqual(integrity["admissions"], 4)
 
 
 if __name__ == "__main__":

@@ -19,14 +19,12 @@ from metaicu.aumcdb.grid.build.encode import (
 from metaicu.aumcdb.grid.build.manifest_parser import (
     parse_manifest as parse_aumcdb_manifest,
 )
-from metaicu.common.grid.scale import LOG_TRANSFORM_TAGS as AUMCDB_LOG_TRANSFORM_TAGS
 from metaicu.mimiciv.grid.build.encode import (
     get_categorical_vocab as mimiciv_categorical_vocab,
 )
 from metaicu.mimiciv.grid.build.manifest_parser import (
     parse_manifest as parse_mimiciv_manifest,
 )
-from metaicu.common.grid.scale import LOG_TRANSFORM_TAGS as MIMICIV_LOG_TRANSFORM_TAGS
 from metaicu.common.grid.schema_union import (
     compute_union_categorical_vocab,
     compute_union_matches,
@@ -43,14 +41,10 @@ class RealManifestSchemaParityTests(unittest.TestCase):
             {"aumcdb": cls.aumc_matches, "mimic_iv": cls.mimic_matches}
         )
 
-    def test_union_matches_without_conflict(self) -> None:
-        # compute_union_matches hard-raises on any reconstruction_type/target_unit disagreement --
-        # setUpClass already ran it; this just documents the union covers every real tag.
-        self.assertEqual(
-            set(self.union), set(self.aumc_matches) | set(self.mimic_matches)
-        )
-
     def test_padding_is_a_no_op_for_both_cohorts(self) -> None:
+        self.assertEqual(len(self.union), 120)
+        self.assertEqual(list(self.aumc_matches), list(self.mimic_matches))
+        self.assertEqual(set(self.union), set(self.aumc_matches))
         self.assertEqual(
             pad_matches_for_cohort(self.aumc_matches, self.union), self.aumc_matches
         )
@@ -73,39 +67,6 @@ class RealManifestSchemaParityTests(unittest.TestCase):
                 categories,
                 union_vocab[tag],
                 f"{tag}: MIMIC-IV vocab differs from union",
-            )
-
-    def test_log_transform_choice_agrees_wherever_both_pipelines_declare_a_tag(
-        self,
-    ) -> None:
-        # metaicu.joint_grid.cli.build_dataset._compute_pooled_scalers imports
-        # LOG_TRANSFORM_TAGS from ONE pipeline only (aumcdb) and uses it for every pooled tag --
-        # a tag declared with a different log_kind (or undeclared, i.e. raw) on the other side
-        # would silently pool that tag in the wrong space. This caught exactly that for "pt"
-        # (real/log1p on MIMIC, structural_zero/absent from AUMC's dict) before this test existed.
-        shared = set(AUMCDB_LOG_TRANSFORM_TAGS) & set(MIMICIV_LOG_TRANSFORM_TAGS)
-        self.assertGreater(len(shared), 0)
-        for tag in shared:
-            self.assertEqual(
-                AUMCDB_LOG_TRANSFORM_TAGS[tag],
-                MIMICIV_LOG_TRANSFORM_TAGS[tag],
-                f"{tag}: log_kind disagrees between aumcdb ({AUMCDB_LOG_TRANSFORM_TAGS[tag]!r}) "
-                f"and mimic_iv ({MIMICIV_LOG_TRANSFORM_TAGS[tag]!r})",
-            )
-        for tag in set(self.union) & (
-            set(AUMCDB_LOG_TRANSFORM_TAGS) | set(MIMICIV_LOG_TRANSFORM_TAGS)
-        ):
-            if self.union[tag]["reconstruction_type"] not in (
-                "direct_numeric",
-                "derived_output_rate",
-                "treatment_rate",
-            ):
-                continue
-            self.assertEqual(
-                AUMCDB_LOG_TRANSFORM_TAGS.get(tag),
-                MIMICIV_LOG_TRANSFORM_TAGS.get(tag),
-                f"{tag}: poolable tag must declare the same log_kind on both sides (or neither) "
-                f"since the joint dispatcher's pooled-scaler code only ever consults aumcdb's dict",
             )
 
 

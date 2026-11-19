@@ -46,7 +46,7 @@ def _optional_tuple(value: Any) -> tuple[str, ...]:
     return tuple(str(entry) for entry in value)
 
 
-def _build_config(cfg: DictConfig) -> GridDatasetConfig:
+def build_config(cfg: DictConfig) -> GridDatasetConfig:
     parent_dir = _optional_path(OmegaConf.select(cfg, "paths.parent_dir"))
     return GridDatasetConfig(
         raw_data_dir=_resolve_path(cfg, "raw_data_dir", parent_dir, "data/raw"),
@@ -94,12 +94,16 @@ def _build_config(cfg: DictConfig) -> GridDatasetConfig:
     )
 
 
+# Older callers import the original parser name.
+_build_config = build_config
+
+
 @hydra.main(version_base=None, config_path="../configs", config_name="grid_dataset")
 def main(cfg: DictConfig) -> None:
     """Build a split-aware iCareFM-style hourly grid from raw MIMIC-IV CSVs."""
 
     OmegaConf.resolve(cfg)
-    config = _build_config(cfg)
+    config = build_config(cfg)
     config.audit_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=str(OmegaConf.select(cfg, "run.log_level", default="INFO")),

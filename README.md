@@ -1,82 +1,19 @@
 # MetaICU
-
-A multi-database ICU data-processing library. AmsterdamUMCdb and MIMIC-IV share the iCareFM-style hourly-grid interface; AmsterdamUMCdb also provides the MEDS/tokenized pipeline.
-
-The source tree is dataset-first:
-
-- `metaicu/aumcdb/`: AUMCdb common I/O, grid, and MEDS/tokenized pipelines.
-- `metaicu/mimiciv/`: MIMIC-IV common I/O and grid pipeline.
-- `metaicu/common/grid/`: dataset-independent grid contracts and preprocessing mechanics.
-- `metaicu/joint_grid/`: pooled cross-dataset fitting and joint-output assembly.
-- `metaicu/cli/`: public dataset-dispatching grid commands and their configurations.
-
-## Quick Start
-
+MetaICU builds hourly ICU grids from AmsterdamUMCdb and MIMIC-IV. It can also convert AmsterdamUMCdb records into pre-MEDS, MEDS-like events and tokenized timelines.
+## Build an hourly grid
+From a clone of this repository, use [uv](https://docs.astral.sh/uv/) to install the locked environment. Set `paths.parent_dir` to a workspace containing your input data under `data/raw/`. The [runbook](docs/user_runbook.md#grid-dataset) describes the expected source files and path overrides.
 ```bash
-git clone https://github.com/AmirV97/MetaICU.git
-cd MetaICU
-uv pip install --python /path/to/python -e .
+uv sync --locked
+uv run grid_build_dataset dataset=aumcdb paths.parent_dir=/path/to/aumc_workspace
 ```
-
-For the full step-by-step workflow (external retrieval, vocabulary build, pre-MEDS, MEDS, tokenization, all CLI commands and flags), see **[docs/user_runbook.md](docs/user_runbook.md)**.
-
-## Current Status
-
-Implemented:
-
-- external retrieval/setup helper
-- reviewed supplied-vocabulary installation, with an optional raw-data rebuild/retrace mode
-- iCareFM-style grid feature manifest and reviewed-manifest parser
-- shared Latin-1-preserving raw parquet cache for the grid and tokenized pipelines
-- raw CSV to hourly grid extraction with unit harmonization, broad physiological outlier removal, train-fitted scaling, imputation, and categorical encoding
-- grid per-feature presence masks (`{tag}__observed`), derived TTE targets (P/F ratio, urine-rate-per-weight), static-demographic prepend onto every hourly row, deterministic physical column order, subject-exclusive splits, emitted TTE-target manifests, and post-write integrity audits
-- deterministic subject splits as a pre-MEDS substage
-- source-preserving pre-MEDS extraction
-- train-derived high-frequency numeric inventory
-- rare-but-dense numeric binning for sparse CRRT-like dense streams
-- causal mean-binned numeric pre-MEDS outputs
-- bounded/full MEDS-like conversion for a supplied pre-MEDS directory
-- split-aware MEDS conversion for train/val/test
-- train-frozen numeric quantile boundaries across train/val/test, corrected with the same itemid-level unit/sentinel/plausibility fixes as the grid pipeline (`tokenized/meds/numeric_qc.py`, ported from `grid/build/unit_conversion_overrides.py` and `plausibility_bounds.py`)
-- train-frozen token vocabulary and tokenized safetensor outputs
-
-## Tests
-
-GitHub Actions runs Ruff, unit tests, and fixture-based integration tests on
-every push and pull request. Real-data tests remain opt-in because CI has no
-access to AmsterdamUMCdb.
-
-Install the development tools:
-
-```bash
-uv sync --extra dev
-```
-
-Run the same checks locally:
-
-```bash
-uv run ruff check src tests scripts
-uv run ruff format --check src tests scripts
-uv run python -m unittest discover -s tests/unit -t . -v
-uv run python -m unittest discover -s tests/integration -t . -v
-```
-
-Fast unit tests:
-
-```bash
-python -m unittest discover -s tests/unit -t . -v
-```
-
-Fixture-based integration tests:
-
-```bash
-python -m unittest discover -s tests/integration -t . -v
-```
-
-See [tests/README.md](tests/README.md) for the complete suite and opt-in real-data regressions.
-
-More detail:
-
-- `docs/user_runbook.md`
-- `docs/policy_decisions.md`
-- `docs/amsterdam_vocab_documentation.md`
+For MIMIC-IV, use `dataset=mimic_iv` and its workspace. Each build writes split Parquet shards, admission metadata, the feature schema and preprocessing artifacts under `data/grid/` by default. The integrity report goes under `audits/grid_dataset/`.
+To fit scalers across cohorts and produce one dataset with source-prefixed IDs, follow the [joint grid workflow](docs/user_runbook.md#joint-grid-dataset-pooled-aumcdb--mimic-iv). For AmsterdamUMCdb event sequences, start with [vocabulary setup](docs/user_runbook.md#inputs) and follow the [pre-MEDS workflow](docs/user_runbook.md#pre-meds) through tokenization.
+## Repository layout
+- [aumcdb](src/metaicu/aumcdb) and [mimiciv](src/metaicu/mimiciv) own their source readers, clinical mappings and extraction rules.
+- [common/grid](src/metaicu/common/grid) implements operations on the shared hourly representation, including patient splitting, target calculations, scaling, imputation and encoding.
+- [cli](src/metaicu/cli) selects the dataset for manifest and standalone grid builds. [joint_grid](src/metaicu/joint_grid) fits pooled statistics, assembles the cohort outputs and writes optional debug subsets.
+## Add a grid dataset
+1. Use the [MIMIC-IV package](src/metaicu/mimiciv) as a working example. Keep raw table names, identifiers, source units and mapping decisions in the new dataset package. Its grid workflow produces a [PreScaleGrid](src/metaicu/common/grid/pre_scale.py) with raw values, observation masks and training admission IDs. The finishing step accepts fitted scalers and writes the grid and its sidecars.
+2. Register the dataset token in the [CLI registry](src/metaicu/cli/datasets.py). Add its [standalone Hydra configuration](src/metaicu/cli/configs/dataset) and its staging configuration in the [joint build](src/metaicu/joint_grid/configs/joint_grid_dataset.yaml). Declare its configuration and manifest files in [pyproject.toml](pyproject.toml) so they ship with the package.
+3. Exercise the new source with a small fixture and the public commands. Check patient split isolation, units, observation masks, categorical columns and schema parity with an existing cohort. Add tests for source-specific behavior alongside the dataset and cover shared operations once under `tests/unit/common/grid/`.
+See the [test guide](tests/README.md) for the Ruff, unit and integration commands used by CI and the opt-in real-data regressions. The [policy record](docs/policy_decisions.md) documents reviewed AmsterdamUMCdb decisions.

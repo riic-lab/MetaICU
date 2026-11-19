@@ -1,32 +1,9 @@
-"""Hydra CLI for a joint AUMCdb + MIMIC-IV (or single-dataset) grid build with pooled statistics.
+"""Build a joint grid with cohort-prefixed stay and subject IDs.
 
-Orchestrates, per selected dataset in cfg.datasets:
-  1. build_pre_scale_grid (metaicu.{aumcdb,mimiciv}.grid.build.build_workflow, Phase 2) --
-     extraction/assembly through presence-mask capture, using that pipeline's OWN native matches.
-     Unchanged/unaware of the joint build; identical to what a standalone grid_build_dataset run
-     does internally.
-  2. Cross-cohort schema padding (metaicu.common.grid.schema_union, Phase 1) -- pads each cohort's
-     matches to the union of every selected cohort's tags, then re-runs
-     materialize_structural_zero_columns/capture_presence_mask (idempotent for a tag already
-     materialized; additive for a newly-padded one) so a tag real in only one cohort still gets a
-     real (if all-null/0) column and presence mask in every cohort's grid.
-  3. Pooled statistics (metaicu.common.grid.pool_scale, Phase 3) -- only when more than one dataset is
-     selected; a single-dataset run through this command still fits its own train split, same as
-     grid_build_dataset.
-  4. finish_grid_dataset (Phase 2) per cohort, given the SAME external_scalers dict, so a pooled
-     tag's fit (same QuantileTransformer instance / mean+std) is identical across cohorts --
-     writes each cohort's own per-cohort STAGING output (dataset_configs.<name>.paths.*).
-  5. write_joint_outputs (metaicu.joint_grid.assemble, Phase 4) -- namespaces admissionid/
-     subject_id (String, cohort-prefixed), concatenates same-named splits, and writes the final
-     flat joint dataset under joint.output_dir/joint.audit_dir.
-
-grid_build_dataset (and metaicu.{aumcdb,mimiciv}.grid.cli.grid_build_dataset) remain the commands
-for an exactly byte-identical, Int64-ID, standalone single-dataset build; prefer them unless the
-pooled-statistics / flat-namespaced-layout joint format is actually wanted. This command's own
-datasets=[X] single-dataset mode is NOT byte-identical to grid_build_dataset's own output -- see
-namespace_ids: admissionid/subject_id are always String-prefixed and a `source` column is always
-added, regardless of how many datasets were selected, so a consumer of this command's output never
-needs to special-case dataset count.
+Each source pipeline extracts its own hourly grid. The joint build pads the
+grids to a shared schema, fits scalers across the selected training cohorts,
+and passes those scalers to each source's output writer. With one cohort the
+writer fits its own scalers. The final assembly combines corresponding splits.
 """
 
 from __future__ import annotations
@@ -40,64 +17,27 @@ import hydra
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 
-from metaicu.aumcdb.grid.build.build_workflow import (
-    build_pre_scale_grid as _build_aumcdb_pre_scale_grid,
-)
-from metaicu.aumcdb.grid.build.build_workflow import (
-    finish_grid_dataset as _finish_aumcdb_dataset,
-)
+from metaicu.cli.datasets import GRID_DATASETS, load_grid_module
+from metaicu.common.grid.external_artifacts import train_values as _train_values
 from metaicu.common.grid.impute import (
     capture_presence_mask,
     materialize_structural_zero_columns,
 )
-from metaicu.common.grid.scale import LOG_TRANSFORM_TAGS, _apply_log
-from metaicu.aumcdb.grid.cli.grid_build_dataset import (
-    _build_config as _build_aumcdb_config,
-)
-from metaicu.mimiciv.grid.build.build_workflow import (
-    build_pre_scale_grid as _build_mimiciv_pre_scale_grid,
-)
-from metaicu.mimiciv.grid.build.build_workflow import (
-    finish_grid_dataset as _finish_mimiciv_dataset,
-)
-from metaicu.mimiciv.grid.cli.grid_build_dataset import (
-    _build_config as _build_mimiciv_config,
-)
-from metaicu.common.grid.external_artifacts import train_values as _train_values
-from metaicu.joint_grid.assemble import write_debug_subset, write_joint_outputs
 from metaicu.common.grid.pool_scale import (
     MIN_TRAIN_VALUES,
     compute_cohort_weights,
     pooled_fit_treatment,
     pooled_mean_std,
 )
+from metaicu.common.grid.scale import LOG_TRANSFORM_TAGS, _apply_log
 from metaicu.common.grid.schema_union import (
     compute_union_matches,
     pad_matches_for_cohort,
 )
+from metaicu.joint_grid.assemble import write_joint_outputs
+from metaicu.joint_grid.debug_subset import write_debug_subset
 
 log = logging.getLogger(__name__)
-
-# (build_config, build_pre_scale_grid, finish_grid_dataset, materialize_structural_zero_columns,
-# capture_presence_mask) per dataset token -- mirrors grid_build_dataset.py's own _DATASETS
-# registry shape, extended with each pipeline's own (byte-identical) impute.py pair so the
-# post-padding re-materialization step (below) uses each cohort's own copy.
-_DATASETS = {
-    "aumcdb": (
-        _build_aumcdb_config,
-        _build_aumcdb_pre_scale_grid,
-        _finish_aumcdb_dataset,
-        materialize_structural_zero_columns,
-        capture_presence_mask,
-    ),
-    "mimic_iv": (
-        _build_mimiciv_config,
-        _build_mimiciv_pre_scale_grid,
-        _finish_mimiciv_dataset,
-        materialize_structural_zero_columns,
-        capture_presence_mask,
-    ),
-}
 
 STATIC_NUMERIC_TAGS = ("age", "weight", "height")
 
@@ -108,21 +48,18 @@ def _optional_path(value: Any) -> Path | None:
     return Path(str(value)).expanduser()
 
 
-def _pad_pre_scale_grid(
-    name, pre_scale_grid, union_registry, materialize_fn, presence_fn
-):
-    """Mutates pre_scale_grid in place: pads its native `matches` to union_registry, re-merges
-    with its own derived_target_matches, and re-runs materialize_structural_zero_columns/
-    capture_presence_mask on its (already-built) grid with the padded dict -- see this module's
-    own docstring, step 2."""
+def _pad_pre_scale_grid(name, pre_scale_grid, union_registry):
+    """Pad a cohort's grid to the shared schema and update its observation masks."""
     n_before = len(pre_scale_grid.matches)
     padded_matches = pad_matches_for_cohort(pre_scale_grid.matches, union_registry)
     padded_matches_with_derived = {
         **padded_matches,
         **pre_scale_grid.derived_target_matches,
     }
-    grid = materialize_fn(pre_scale_grid.grid, padded_matches_with_derived)
-    grid, presence_mask_cols = presence_fn(grid, padded_matches_with_derived)
+    grid = materialize_structural_zero_columns(
+        pre_scale_grid.grid, padded_matches_with_derived
+    )
+    grid, presence_mask_cols = capture_presence_mask(grid, padded_matches_with_derived)
     pre_scale_grid.matches = padded_matches
     pre_scale_grid.matches_with_derived = padded_matches_with_derived
     pre_scale_grid.grid = grid
@@ -215,10 +152,10 @@ def main(cfg: DictConfig) -> None:
 
     OmegaConf.resolve(cfg)
     datasets = list(OmegaConf.select(cfg, "datasets") or [])
-    unknown = sorted(set(datasets) - set(_DATASETS))
+    unknown = sorted(set(datasets) - set(GRID_DATASETS))
     if not datasets or unknown:
         raise ValueError(
-            f"datasets must be a non-empty list drawn from {sorted(_DATASETS)}, got {datasets!r}"
+            f"datasets must be a non-empty list drawn from {sorted(GRID_DATASETS)}, got {datasets!r}"
         )
 
     joint_output_dir = _optional_path(OmegaConf.select(cfg, "joint.output_dir"))
@@ -244,14 +181,16 @@ def main(cfg: DictConfig) -> None:
     )
 
     configs = {}
+    workflows = {}
     for name in datasets:
-        build_config_fn = _DATASETS[name][0]
+        command = load_grid_module(name, "cli.grid_build_dataset")
+        workflows[name] = load_grid_module(name, "build.build_workflow")
         sub_cfg = OmegaConf.select(cfg, f"dataset_configs.{name}")
         if sub_cfg is None:
             raise ValueError(
                 f"dataset_configs.{name} is required when datasets includes {name!r}"
             )
-        config = build_config_fn(sub_cfg)
+        config = command.build_config(sub_cfg)
         if name == "aumcdb" and config.unit_of_analysis != "admission":
             raise ValueError(
                 "grid_build_joint_dataset only supports split.unit_of_analysis='admission' -- "
@@ -261,20 +200,21 @@ def main(cfg: DictConfig) -> None:
         configs[name] = config
 
     log.info(f"Building pre-scale grids for {datasets}")
-    pre_scale_by_cohort = {name: _DATASETS[name][1](configs[name]) for name in datasets}
+    pre_scale_by_cohort = {
+        name: workflows[name].build_pre_scale_grid(configs[name]) for name in datasets
+    }
 
     union_registry = compute_union_matches(
         {name: psg.matches for name, psg in pre_scale_by_cohort.items()}
     )
     for name, psg in pre_scale_by_cohort.items():
-        materialize_fn, presence_fn = _DATASETS[name][3], _DATASETS[name][4]
-        _pad_pre_scale_grid(name, psg, union_registry, materialize_fn, presence_fn)
+        _pad_pre_scale_grid(name, psg, union_registry)
 
     n_train_admissions = {
         name: len(psg.train_admission_ids) for name, psg in pre_scale_by_cohort.items()
     }
     weights = compute_cohort_weights(n_train_admissions)
-    log.info(f"Cohort weights (1/sqrt(n_train), normalized): {weights}")
+    log.info(f"Cohort weights (normalized sqrt(n_train)): {weights}")
 
     external_scalers = None
     if len(datasets) > 1:
@@ -285,8 +225,7 @@ def main(cfg: DictConfig) -> None:
 
     cohort_output_dirs = {}
     for name in datasets:
-        finish_fn = _DATASETS[name][2]
-        finish_fn(
+        workflows[name].finish_grid_dataset(
             configs[name], pre_scale_by_cohort[name], external_scalers=external_scalers
         )
         cohort_output_dirs[name] = configs[name].output_dir

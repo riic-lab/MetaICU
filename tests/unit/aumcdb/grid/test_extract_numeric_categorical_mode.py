@@ -1,57 +1,27 @@
-"""Regression test: categorical mode-tie-break determinism in extract_numeric_categorical's
-group_by(...).agg(pl.col("label").mode()...) step.
-
-pl.Series.mode() returns every value tied for most-frequent, in an order that depends on
-evaluation/scan order (confirmed nondeterministic under engine="streaming": re-running the same
-extraction twice flipped 0.01-0.09% of hours per categorical tag on the MIMIC-IV side,
-2026-08-03). .mode().first() alone is therefore nondeterministic on ties; .mode().sort().first()
-breaks ties alphabetically instead, independent of row order.
-"""
-
-from __future__ import annotations
+"""Hourly categorical extraction uses the most frequent label, with alphabetical ties."""
 
 import unittest
+from unittest.mock import patch
 
 import polars as pl
 
+from metaicu.aumcdb.grid.build import extract_numeric
+
 
 class ModeTieBreakTests(unittest.TestCase):
-    def test_tied_labels_resolve_alphabetically_regardless_of_row_order(self) -> None:
-        # (admissionid=1, hour=0): "b" and "a" each appear twice -- a genuine tie.
-        forward = pl.DataFrame(
+    def test_hourly_mode_and_alphabetical_tie_break(self):
+        rows = pl.DataFrame(
             {
-                "tag": ["x"] * 4,
-                "admissionid": [1] * 4,
-                "hour": [0] * 4,
-                "label": ["b", "a", "b", "a"],
+                "admissionid": [1] * 7,
+                "tag": ["rass"] * 7,
+                "hour": [0, 0, 0, 0, 1, 1, 1],
+                "label": ["b", "a", "b", "a", "a", "b", "b"],
             }
         )
-        reversed_rows = forward.reverse()
-
-        agg_forward = forward.group_by(["tag", "admissionid", "hour"]).agg(
-            pl.col("label").mode().sort().first().alias("agg_label")
-        )
-        agg_reversed = reversed_rows.group_by(["tag", "admissionid", "hour"]).agg(
-            pl.col("label").mode().sort().first().alias("agg_label")
-        )
-
-        self.assertEqual(agg_forward["agg_label"].to_list(), ["a"])
-        self.assertEqual(agg_reversed["agg_label"].to_list(), ["a"])
-
-    def test_non_tied_mode_is_unaffected(self) -> None:
-        df = pl.DataFrame(
-            {
-                "tag": ["x"] * 3,
-                "admissionid": [1] * 3,
-                "hour": [0] * 3,
-                "label": ["a", "a", "b"],
-            }
-        )
-        agg = df.group_by(["tag", "admissionid", "hour"]).agg(
-            pl.col("label").mode().sort().first().alias("agg_label")
-        )
-        self.assertEqual(agg["agg_label"].to_list(), ["a"])
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
+        for order, raw in (("forward", rows), ("reverse", rows.reverse())):
+            with (
+                self.subTest(order=order),
+                patch.object(extract_numeric, "_build_categorical", return_value=raw),
+            ):
+                _, hourly = extract_numeric.extract_numeric_categorical({}, None, None)
+                self.assertEqual(hourly.sort("hour")["agg_label"].to_list(), ["a", "b"])

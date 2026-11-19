@@ -34,24 +34,13 @@ class PresenceMaskTests(unittest.TestCase):
             }
         )
 
-    def test_mask_only_added_for_continuous_reconstruction_types(self) -> None:
-        grid, mask_cols = capture_presence_mask(self.grid, MATCHES)
-        self.assertEqual(set(mask_cols), {"hr__observed", "urine_rate__observed"})
-        self.assertNotIn("mgcs__observed", grid.columns)
-        self.assertNotIn("norepi_ind__observed", grid.columns)
-
-    def test_mask_reflects_true_nulls_not_a_value_diff_heuristic(self) -> None:
-        grid, _ = capture_presence_mask(self.grid, MATCHES)
-        hr_observed = grid.sort("hour")["hr__observed"].to_list()
-        # hour 2 repeats hour 0's value (80.0) but was a genuine reading -- observed=1, not 0.
-        self.assertEqual(hr_observed, [1, 0, 1, 0])
-        urine_observed = grid.sort("hour")["urine_rate__observed"].to_list()
-        self.assertEqual(urine_observed, [0, 0, 0, 1])
-
     def test_mask_captured_before_impute_still_shows_0_where_value_gets_filled(
         self,
     ) -> None:
         grid, mask_cols = capture_presence_mask(self.grid, MATCHES)
+        self.assertEqual(set(mask_cols), {"hr__observed", "urine_rate__observed"})
+        self.assertNotIn("mgcs__observed", grid.columns)
+        self.assertNotIn("norepi_ind__observed", grid.columns)
         grid = impute_grid(grid, MATCHES, scaled_numeric_tags={"hr", "urine_rate"})
         grid = grid.sort("hour")
         # hour 1: forward-filled from hour 0's real 80.0 -- value present, but observed=0.

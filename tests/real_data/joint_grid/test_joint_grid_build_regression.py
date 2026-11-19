@@ -1,7 +1,7 @@
 """Regression test: run the real joint AUMCdb+MIMIC-IV grid pipeline (metaicu.joint_grid.cli.
 grid_build_joint_dataset's own orchestration, called directly rather than through Hydra) against
 real, bounded samples of both cohorts and sanity-check the two real-data properties the design
-plan calls out explicitly: cohort weights reflect the real 1/sqrt(n_train) ratio, and a tag real
+plan calls out explicitly: cohort weights reflect the real sqrt(n_train) ratio, and a tag real
 only on one side (here "pt", real on MIMIC-IV, structural_zero on AUMCdb) ends up pooled as a
 scaler that is visibly, verifiably that cohort's own solo fit -- not diluted, not silently
 mis-transformed.
@@ -40,10 +40,6 @@ from metaicu.aumcdb.grid.build.build_workflow import (
 from metaicu.aumcdb.grid.build.build_workflow import (
     finish_grid_dataset as finish_aumcdb,
 )
-from metaicu.common.grid.impute import (
-    capture_presence_mask as aumcdb_capture_presence_mask,
-    materialize_structural_zero_columns as aumcdb_materialize_structural_zero,
-)
 from metaicu.aumcdb.grid.build.manifest_parser import (
     DEFAULT_REVIEWED_MANIFEST as AUMCDB_DEFAULT_MANIFEST,
 )
@@ -53,10 +49,6 @@ from metaicu.mimiciv.grid.build.build_workflow import (
 )
 from metaicu.mimiciv.grid.build.build_workflow import (
     finish_grid_dataset as finish_mimiciv,
-)
-from metaicu.common.grid.impute import (
-    capture_presence_mask as mimiciv_capture_presence_mask,
-    materialize_structural_zero_columns as mimiciv_materialize_structural_zero,
 )
 from metaicu.mimiciv.grid.build.manifest_parser import (
     DEFAULT_REVIEWED_MANIFEST as MIMICIV_DEFAULT_MANIFEST,
@@ -143,20 +135,8 @@ class JointGridBuildRegressionTests(unittest.TestCase):
         union_registry = compute_union_matches(
             {name: p.matches for name, p in pre_scale_by_cohort.items()}
         )
-        _pad_pre_scale_grid(
-            "aumcdb",
-            pre_scale_by_cohort["aumcdb"],
-            union_registry,
-            aumcdb_materialize_structural_zero,
-            aumcdb_capture_presence_mask,
-        )
-        _pad_pre_scale_grid(
-            "mimic_iv",
-            pre_scale_by_cohort["mimic_iv"],
-            union_registry,
-            mimiciv_materialize_structural_zero,
-            mimiciv_capture_presence_mask,
-        )
+        for name, grid in pre_scale_by_cohort.items():
+            _pad_pre_scale_grid(name, grid, union_registry)
 
         cls.n_train = {
             name: len(p.train_admission_ids) for name, p in pre_scale_by_cohort.items()
@@ -195,8 +175,8 @@ class JointGridBuildRegressionTests(unittest.TestCase):
         cls.tmp.cleanup()
 
     def test_cohort_weight_ratio_matches_sqrt_of_real_train_counts(self) -> None:
-        expected_ratio = math.sqrt(self.n_train["mimic_iv"]) / math.sqrt(
-            self.n_train["aumcdb"]
+        expected_ratio = math.sqrt(self.n_train["aumcdb"]) / math.sqrt(
+            self.n_train["mimic_iv"]
         )
         actual_ratio = self.weights["aumcdb"] / self.weights["mimic_iv"]
         self.assertAlmostEqual(actual_ratio, expected_ratio, places=6)
@@ -240,7 +220,7 @@ class JointGridBuildRegressionTests(unittest.TestCase):
         print(
             f"\nReal (sample_size={SAMPLE_SIZE}) train admission counts: {self.n_train}"
         )
-        print(f"Cohort weights (1/sqrt(n_train), normalized): {self.weights}")
+        print(f"Cohort weights (sqrt(n_train), normalized): {self.weights}")
 
 
 if __name__ == "__main__":

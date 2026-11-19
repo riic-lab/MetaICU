@@ -27,6 +27,8 @@ class NamespaceIdsTests(unittest.TestCase):
         self.assertEqual(namespaced["admissionid"].to_list(), ["aumcdb_1", "aumcdb_2"])
         self.assertEqual(namespaced["subject_id"].to_list(), ["aumcdb_10", "aumcdb_20"])
         self.assertEqual(namespaced["hour"].to_list(), [0, 1])
+        self.assertEqual(df["admissionid"].to_list(), [1, 2])
+        self.assertEqual(df.schema["admissionid"], pl.Int64)
         self.assertEqual(namespaced.schema["admissionid"], pl.Utf8)
 
     def test_only_namespaces_columns_that_are_present(self) -> None:
@@ -36,12 +38,6 @@ class NamespaceIdsTests(unittest.TestCase):
         self.assertEqual(
             namespaced["admissionid"].to_list(), ["mimic_iv_1", "mimic_iv_2"]
         )
-
-    def test_does_not_mutate_input(self) -> None:
-        df = pl.DataFrame({"admissionid": [1]})
-        namespace_ids(df, "aumcdb")
-        self.assertEqual(df["admissionid"].to_list(), [1])
-        self.assertEqual(df.schema["admissionid"], pl.Int64)
 
 
 class CountCrossCohortIdCollisionsTests(unittest.TestCase):
@@ -60,10 +56,6 @@ class CountCrossCohortIdCollisionsTests(unittest.TestCase):
 
 
 class AssertGloballyUniqueTests(unittest.TestCase):
-    def test_no_duplicates_does_not_raise(self) -> None:
-        df = pl.DataFrame({"admissionid": ["aumcdb_1", "mimic_iv_1"]})
-        assert_globally_unique(df, "admissionid")  # should not raise
-
     def test_duplicate_raises(self) -> None:
         df = pl.DataFrame({"admissionid": ["aumcdb_1", "aumcdb_1", "mimic_iv_1"]})
         with self.assertRaises(ValueError):
@@ -77,12 +69,12 @@ class MergeTteTargetsTests(unittest.TestCase):
         # real in only one cohort must survive into the joint target list regardless.
         aumc = {
             "targets": ["lact", "map"],
-            "missing": ["tri"],
+            "missing": ["tri", "absent"],
             "derived": {"pf_ratio": ["po2", "fio2"]},
         }
         mimic = {
             "targets": ["lact", "map", "bili_dir"],
-            "missing": [],
+            "missing": ["absent"],
             "derived": {
                 "pf_ratio": ["po2", "fio2"],
                 "urine_rate_per_weight": ["urine_rate", "weight"],
@@ -92,7 +84,7 @@ class MergeTteTargetsTests(unittest.TestCase):
         self.assertEqual(merged["targets"], ["bili_dir", "lact", "map"])
         # "tri" is missing for aumcdb but not declared missing for mimic_iv -- only genuinely
         # globally-missing tags (missing in EVERY cohort) belong in the joint "missing" list.
-        self.assertEqual(merged["missing"], [])
+        self.assertEqual(merged["missing"], ["absent"])
         self.assertEqual(
             merged["derived"],
             {
@@ -100,12 +92,6 @@ class MergeTteTargetsTests(unittest.TestCase):
                 "urine_rate_per_weight": ["urine_rate", "weight"],
             },
         )
-
-    def test_tag_missing_in_every_cohort_stays_missing(self) -> None:
-        aumc = {"targets": [], "missing": ["tri"], "derived": {}}
-        mimic = {"targets": [], "missing": ["tri"], "derived": {}}
-        merged = merge_tte_targets({"aumcdb": aumc, "mimic_iv": mimic})
-        self.assertEqual(merged["missing"], ["tri"])
 
 
 class SelectDebugAdmissionIdsTests(unittest.TestCase):
@@ -129,16 +115,7 @@ class SelectDebugAdmissionIdsTests(unittest.TestCase):
         )
         self.assertEqual(summary["aumcdb"]["n_tail"], 1)
         self.assertEqual(summary["aumcdb"]["los_hours_tail_threshold"], 100.0)
-        self.assertIn(ids[los.index(100)], selected)
-
-    def test_decile_frac_zero_selects_only_the_tail(self) -> None:
-        los = list(range(1, 101))
-        ids = [f"a{i}" for i in range(100)]
-        metadata = self._metadata("aumcdb", ids, los)
-        selected, summary = select_debug_admission_ids(
-            metadata, top_pct=0.05, decile_frac=0.0, n_deciles=10, seed=0
-        )
-        self.assertEqual(len(selected), summary["aumcdb"]["n_tail"])
+        self.assertEqual(selected, [ids[los.index(100)]])
         self.assertEqual(summary["aumcdb"]["n_sampled_from_rest"], 0)
 
     def test_every_decile_of_the_remainder_contributes_at_least_one(self) -> None:

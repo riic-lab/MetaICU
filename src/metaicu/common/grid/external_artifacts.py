@@ -1,7 +1,7 @@
 """Reuse a previously-built grid dataset's numerical processing artifacts (scalers.pkl,
 categorical_encoding.csv, feature_schema.json, metadata.csv's train-admission count) when
-building a DIFFERENT dataset, pooling with that dataset's own fresh per-tag fit via the same
-1/sqrt(n_train_admissions) weighting metaicu.common.grid.pool_scale already uses for joint builds.
+building another dataset. Each cohort's total weight is proportional to the square root of
+its training admission count, as in the joint build.
 
 A tag entirely absent from the external artifacts (a genuinely new feature the other dataset
 never had) is simply left OUT of the returned external_scalers dict -- scale_grid/
@@ -28,10 +28,10 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+from metaicu.common.grid.encode import MISSING_CATEGORY_LABEL
 from metaicu.common.grid.pool_scale import pooled_fit_treatment, pooled_mean_std
 from metaicu.common.grid.schema_union import compute_union_categorical_vocab
 
-MISSING_CATEGORY_LABEL = "(missing)"
 SYNTHETIC_TREATMENT_SAMPLES = (
     2000  # exceeds a fitted QuantileTransformer's own n_quantiles cap
 )

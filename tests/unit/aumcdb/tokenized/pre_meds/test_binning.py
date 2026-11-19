@@ -21,8 +21,8 @@ def fixture_numericitems() -> pl.DataFrame:
     rows = [
         (1, 10, 100, 10, 10, 1, "Dense HR", 10.0, 0),
         (1, 10, 100, 10, 10, 1, "Dense HR", 20.0, 30 * 60_000),
-        (1, 10, 100, 10, 10, 1, "Dense HR", 30.0, 60 * 60_000),
-        (1, 10, 100, 10, 10, 1, "Dense HR", 50.0, 90 * 60_000),
+        (1, 10, 100, 10, 10, 1, "Dense HR", 30.0, 120 * 60_000),
+        (1, 10, 100, 10, 10, 1, "Dense HR", 50.0, 150 * 60_000),
         (2, 20, 200, 20, 20, 1, "Dense HR", 100.0, 0),
         (2, 20, 200, 20, 20, 1, "Dense HR", 200.0, 30 * 60_000),
         (1, 10, 100, 10, 10, 2, "Sparse lab", 4.0, 0),
@@ -99,7 +99,7 @@ class CausalMeanBinningTests(unittest.TestCase):
                 (pl.col("itemid") == 1) & (pl.col("admissionid") == 10)
             ).sort("admission_relative_ms")
             self.assertEqual(
-                dense["admission_relative_ms"].to_list(), [60 * 60_000, 120 * 60_000]
+                dense["admission_relative_ms"].to_list(), [60 * 60_000, 180 * 60_000]
             )
             self.assertEqual(dense["value"].to_list(), [15.0, 40.0])
             self.assertEqual(dense["raw_rows_in_bin"].to_list(), [2, 2])
@@ -122,40 +122,6 @@ class CausalMeanBinningTests(unittest.TestCase):
             self.assertEqual(summary["high_resolution_signal_count"], 1)
             self.assertEqual(summary["high_resolution_raw_rows"], 6)
             self.assertEqual(summary["high_resolution_binned_rows"], 3)
-
-    def test_transform_does_not_emit_empty_bins(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            input_path = root / "numericitems.parquet"
-            output_path = root / "numericitems_binned"
-            inventory_path = root / "hf_numeric_inventory.csv"
-            summary_path = root / "summary.json"
-            fixture_numericitems().filter(pl.col("itemid") == 1).filter(
-                pl.col("admissionid") == 10
-            ).filter(
-                pl.col("admission_relative_ms").is_in([0, 30 * 60_000, 90 * 60_000])
-            ).write_parquet(input_path)
-            pl.DataFrame(
-                [{"itemid": 1, "row_count": 3, "is_high_resolution": True}]
-            ).write_csv(inventory_path)
-
-            CausalMeanBinningTransform(
-                CausalMeanBinningConfig(
-                    input_path=input_path,
-                    output_path=output_path,
-                    inventory_path=inventory_path,
-                    summary_path=summary_path,
-                    window_minutes=60,
-                    partition_count=1,
-                    overwrite=True,
-                )
-            ).run()
-            out = pl.read_parquet(output_path / "part-00000.parquet").sort(
-                "admission_relative_ms"
-            )
-            self.assertEqual(
-                out["admission_relative_ms"].to_list(), [60 * 60_000, 120 * 60_000]
-            )
 
 
 if __name__ == "__main__":

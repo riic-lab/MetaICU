@@ -381,28 +381,14 @@ INSERT INTO fs VALUES (10, 'Rhythm', 'Rhythm', 'cardiac grouping', 1, 'rhythm', 
         ]
         subprocess.run(cmd, cwd=self.root, check=True)
 
-        self.assertTrue((parent_dir / "vocab/aumc_supplied_vocab.csv").exists())
+        self.assertEqual(
+            (parent_dir / "vocab/aumc_supplied_vocab.csv").read_bytes(),
+            packaged_supplied_vocab().read_bytes(),
+        )
         self.assertTrue((parent_dir / "audits/vocab/build_vocab_summary.json").exists())
         self.assertTrue((parent_dir / "audits/vocab/run_config.json").exists())
         self.assertFalse(
             (parent_dir / "audits/vocab/vocab_pipeline_source_vocab.csv").exists()
-        )
-
-    def test_build_vocab_from_outside_checkout_installs_packaged_supplied_vocab(
-        self,
-    ) -> None:
-        output_vocab = self.root / "outside_vocab/aumc_supplied_vocab.csv"
-
-        cmd = [
-            sys.executable,
-            str(PIPELINE_ROOT / "scripts/cli/build_amsterdam_vocab.py"),
-            f"paths.output_vocab={output_vocab}",
-        ]
-        subprocess.run(cmd, cwd=self.root, check=True)
-
-        self.assertTrue(output_vocab.exists())
-        self.assertTrue(
-            (output_vocab.parent / "audits/build_vocab_summary.json").exists()
         )
 
     def test_build_vocab_installs_explicit_supplied_vocab(self) -> None:
@@ -418,6 +404,9 @@ INSERT INTO fs VALUES (10, 'Rhythm', 'Rhythm', 'cardiac grouping', 1, 'rhythm', 
         ]
         subprocess.run(cmd, cwd=self.root, check=True)
 
+        self.assertTrue(
+            (output_vocab.parent / "audits/build_vocab_summary.json").is_file()
+        )
         self.assertEqual(output_vocab.read_bytes(), reviewed_vocab.read_bytes())
         self.assertTrue((output_vocab.parent / "audits/run_config.json").exists())
 

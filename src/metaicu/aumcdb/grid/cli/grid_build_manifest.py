@@ -48,7 +48,7 @@ def _resolve_optional(
     return parent_dir / default_child
 
 
-def _build_config(cfg: DictConfig) -> GridManifestConfig:
+def build_config(cfg: DictConfig) -> GridManifestConfig:
     parent_dir = _optional_path(OmegaConf.select(cfg, "paths.parent_dir"))
     return GridManifestConfig(
         output_manifest=_resolve_required(
@@ -73,12 +73,16 @@ def _build_config(cfg: DictConfig) -> GridManifestConfig:
     )
 
 
+# Older callers import the original parser name.
+_build_config = build_config
+
+
 @hydra.main(version_base=None, config_path="../configs", config_name="grid_manifest")
 def main(cfg: DictConfig) -> None:
     """Build the grid feature manifest and audit files."""
 
     OmegaConf.resolve(cfg)
-    outputs = write_grid_manifest_outputs(_build_config(cfg))
+    outputs = write_grid_manifest_outputs(build_config(cfg))
     print(
         json.dumps(
             {name: str(path) for name, path in outputs.items()},

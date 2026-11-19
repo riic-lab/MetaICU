@@ -17,6 +17,7 @@ __pycache__/
 .DS_Store
 
 # Generated outputs and logs
+.test_runs/
 audits/
 outputs/
 logs/

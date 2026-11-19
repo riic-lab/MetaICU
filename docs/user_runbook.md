@@ -136,28 +136,16 @@ grid_build_dataset dataset=mimic_iv paths.parent_dir=/path/to/mimic_workspace
 Use `grid_build_dataset` for ordinary single-dataset builds. Use `grid_build_joint_dataset`
 (below) only when pooled cross-dataset fitting or one flat, namespaced output is required.
 
-The grid and tokenized pipelines share the Latin-1-preserving cache under
+The AmsterdamUMCdb grid and tokenized pipelines share the Latin-1-preserving cache under
 `data/raw_shards/`. The first pipeline to run builds schema-cast parquet shards
 for `numericitems`, `listitems`, and `drugitems`; later grid or pre-MEDS runs
 reuse them. Set `run.rebuild_raw_shards=true` only when the raw source files or
 canonical raw schemas have changed.
 
-MIMIC-IV accepts explicit `paths.raw_data_dir`, `paths.raw_shards_dir`, `paths.output_dir`, and `paths.audit_dir` in the same dispatcher. Both datasets refuse to reuse an output containing generated grid artifacts unless `run.overwrite=true`; overwrite removes only known grid artifacts and preserves unrelated files.
-
-The build runs the full A.4.1-A.4.3 pipeline (hourly gridding, unit harmonization,
-plausibility-bound outlier removal, train-fitted scaling, forward-/zero-fill
-imputation, one-hot categorical encoding; see
-`src/metaicu/aumcdb/grid/data/icarefm_preprocessing_reference.md`) and adds: a
-per-feature presence mask (`{tag}__observed`, 1 = real reading that hour, captured
-before imputation), the derived TTE targets `pf_ratio` (= po2 / (fio2/100)) and
-`urine_rate_per_weight`, and the 5 static demographics (age/weight/height/sex/adm)
-prepended onto every hourly row. Inclusion criteria (A.2.2: LoS >= 4h, >= 4 numeric
-measurements, max gap <= 48h) and the 80/10/10 split are always applied at the
-patient (subject) level, so a patient's repeat admissions never leak across splits.
-
-`run.unit_of_analysis` sets sample granularity: `admission` (default, one sample per
-ICU admission) or `subject` (one per patient, that patient's admissions concatenated
-chronologically).
+For MIMIC-IV, point `paths.raw_data_dir` at the prepared MIMIC export containing `icu/` and `hosp/`. The reader expects the compressed event tables and `hosp/patients.parquet` with `subject_id`, `gender` and `year_of_birth`. Both datasets accept `paths.raw_shards_dir`, `paths.output_dir` and `paths.audit_dir`. Reusing a grid output directory requires `run.overwrite=true`, which removes previously generated grid artifacts.
+Both pipelines harmonize units, filter implausible values and aggregate measurements by hour. They compute the P/F ratio and weight-normalized urine rate from unscaled values and record a binary observation mask for each continuous observation or derived-rate feature before imputation. They then fit scalers on training data, fill missing values and encode categories. Each hourly row also carries age, weight, height, sex, admission urgency, admission origin and ethnicity. See the [preprocessing reference](../src/metaicu/aumcdb/grid/data/icarefm_preprocessing_reference.md) for the feature-level rules.
+The default inclusion criteria require an ICU stay of at least four hours, numeric observations in at least four distinct hours, and at most 48 hours between consecutive observed hours. Patients are split 80/10/10 across training, validation and test so that repeat admissions stay together. AmsterdamUMCdb's standalone build supports `split.unit_of_analysis=subject` to concatenate each patient's admissions chronologically. Both datasets default to one sample per admission.
+The grid uses seed 42 by default. To change it via the standalone dispatcher, pass `+run.random_seed=7`. Its dataset configurations also list `run.seed` and `split.seed`, which the builders currently ignore. In a joint build, set `dataset_configs.<name>.run.random_seed` for each source and `joint.random_seed` for the pooled treatment fit.
 
 Outputs under `paths.output_dir`:
 
@@ -165,7 +153,7 @@ Outputs under `paths.output_dir`:
 train|val|test/N.parquet              per-split hourly grid shards
 metadata.csv                          one row per admission (or subject)
 feature_schema.json                   per-column reconstruction type, unit, presence-mask column
-tte_targets.json                      canonical K=34 TTE target list and order
+tte_targets.json                      TTE targets and missing tags (35 targets in the full build)
 scalers.pkl / scalers.summary.json    train-fitted scalers
 categorical_encoding.csv              one-hot column layout (static + grid)
 ```
@@ -186,9 +174,8 @@ block is that cohort's own per-cohort **staging** build (same `paths`/`split`/`r
 standalone `grid_build_dataset`, written in full to its own `paths.output_dir`/`paths.audit_dir`).
 With more than one dataset selected, every scaled tag (static age/weight/height and every grid
 `direct_numeric`/`derived_output_rate`/`treatment_rate` tag with real data in at least one cohort)
-is fit on **pooled, weighted** train-split statistics instead of each cohort's own split alone --
-weight `w_c = 1/sqrt(n_train_admissions_c)`, normalized to sum to 1, the same weighting the
-training repo uses for its per-cohort loss.
+uses pooled training data. Each cohort's weight is proportional to the square root of its
+number of training admissions. For a given feature, contributing cohorts' weights sum to one.
 
 The final joint output under `joint.output_dir` always uses one flat layout, regardless of how
 many datasets were selected:
@@ -206,16 +193,8 @@ scalers.summary.json       human-readable provenance for scalers.pkl (pooled tag
                             cohorts, weights)
 ```
 
-`admissionid`/`subject_id` are always `f"{cohort}_{id}"` **strings** (not the raw Int64 IDs) --
-this is intentional even for a single selected dataset, so a consumer never needs to special-case
-dataset count. `metadata.csv` also carries `native_admissionid`/`native_subject_id` -- the
-original per-cohort numeric ID, before namespacing -- so tracing an admission back to its source
-system never requires parsing the namespaced string yourself (`source` + `.removeprefix()` would
-work, but note "mimic_iv" itself contains an underscore, so a naive split on the first "_" gives
-the wrong answer). Note `outcome`'s definition differs by cohort despite matching string values
-(AUMCdb: patient-level any-time death; MIMIC-IV: in-hospital-this-admission death) -- always key
-off `source` before comparing `outcome` across rows. `split.unit_of_analysis=subject` (AUMCdb
-only) is not supported for a joint build.
+`admissionid` and `subject_id` are source-prefixed strings, including in single-source joint builds. Use `source`, `native_admissionid` and `native_subject_id` in `metadata.csv` to recover the original IDs. Joint builds require admission-level rows.
+Both cohorts report mortality for the admission. MIMIC-IV uses `hospital_expire_flag`. AmsterdamUMCdb assigns death only to the patient's last included admission, from admission through 24 hours after discharge. When discharge time is unavailable, the upper bound is open.
 
 ### Debug subset (small, pooled, LOS-stratified)
 
@@ -228,7 +207,7 @@ grid_build_joint_dataset datasets=[mimic_iv,aumcdb] \
 ```
 
 `debug.enabled=true` builds a second, much smaller dataset from the just-written joint output
-(`metaicu.joint_grid.assemble.write_debug_subset`) -- same output-contract shape as any other grid
+(`metaicu.joint_grid.debug_subset.write_debug_subset`) -- same output-contract shape as any other grid
 dataset directory (`metadata.csv`, `feature_schema.json`, shards, sidecars), so it can be pointed
 at by anything that reads a normal grid dataset. Meant for exercising the training pipeline
 end-to-end (padding/masking edge cases, short- and long-sequence behavior, microbatch shapes)
@@ -376,39 +355,7 @@ build-aumc-tokenized paths.parent_dir=/path/to/aumc_workspace run.medication_atc
 ```
 
 ## Tests
-
-GitHub Actions automatically runs Ruff plus the unit and integration suites on
-each push and pull request. Real-data tests remain local because hosted runners
-cannot access AmsterdamUMCdb.
-
-Install the development tools and run the same lint check locally:
-
-```bash
-uv sync --extra dev
-uv run ruff check src tests scripts
-```
-
-Run fast unit tests during development:
-
-```bash
-cd /path/to/MetaICU
-python -m unittest discover -s tests/unit -t . -v
-```
-
-Run fixture-based integration tests before merging:
-
-```bash
-python -m unittest discover -s tests/integration -t . -v
-```
-
-Run everything; real-data tests skip unless their documented environment variables are set:
-
-```bash
-python -m unittest discover -s tests -t . -v
-```
-
-See `tests/README.md` for the directory contract and full-data commands.
-
+See the [test guide](../tests/README.md) for the CI commands, synthetic fixtures and opt-in real-data regressions.
 ## Next Development Tasks
 
 - Re-run bounded pre-MEDS -> MEDS -> tokenization QC after the aggressive rare-dense binning default. Confirm whether CRRT dilution/flow streams are now binned rather than raw-passthrough.

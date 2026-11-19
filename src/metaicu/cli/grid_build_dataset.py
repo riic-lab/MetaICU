@@ -1,15 +1,4 @@
-"""Dataset-dispatching Hydra CLI for raw-source to iCareFM-style hourly grid construction.
-
-Delegates to each dataset's own (_build_config, write_grid_dataset_outputs) pair based on
-cfg.dataset_name (set by the composed dataset=<name> config group -- see configs/dataset/).
-metaicu.aumcdb.grid.cli.grid_build_dataset and metaicu.mimiciv.grid.cli.grid_build_dataset
-remain independently invocable and untouched; this module is the shared multi-dataset entry
-point pyproject.toml's grid_build_dataset console script points at.
-
-Use this command for ordinary single-dataset builds. Use grid_build_joint_dataset
-(metaicu.joint_grid.cli.build_dataset) only when pooled cross-dataset fitting or one namespaced
-output is required.
-"""
+"""Build the hourly grid for the selected dataset."""
 
 from __future__ import annotations
 
@@ -19,23 +8,7 @@ import logging
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
-from metaicu.aumcdb.grid.build.build_workflow import (
-    write_grid_dataset_outputs as _write_aumcdb_outputs,
-)
-from metaicu.aumcdb.grid.cli.grid_build_dataset import (
-    _build_config as _build_aumcdb_config,
-)
-from metaicu.mimiciv.grid.build.build_workflow import (
-    write_grid_dataset_outputs as _write_mimiciv_outputs,
-)
-from metaicu.mimiciv.grid.cli.grid_build_dataset import (
-    _build_config as _build_mimiciv_config,
-)
-
-_DATASETS = {
-    "aumcdb": (_build_aumcdb_config, _write_aumcdb_outputs),
-    "mimic_iv": (_build_mimiciv_config, _write_mimiciv_outputs),
-}
+from metaicu.cli.datasets import load_grid_module
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="grid_dataset")
@@ -44,13 +17,9 @@ def main(cfg: DictConfig) -> None:
 
     OmegaConf.resolve(cfg)
     dataset_name = str(OmegaConf.select(cfg, "dataset_name"))
-    if dataset_name not in _DATASETS:
-        raise ValueError(
-            f"Unknown dataset_name={dataset_name!r}, expected one of {sorted(_DATASETS)}"
-        )
-    build_config, write_outputs = _DATASETS[dataset_name]
-
-    config = build_config(cfg)
+    command = load_grid_module(dataset_name, "cli.grid_build_dataset")
+    workflow = load_grid_module(dataset_name, "build.build_workflow")
+    config = command.build_config(cfg)
     config.audit_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=str(OmegaConf.select(cfg, "run.log_level", default="INFO")),
@@ -61,7 +30,7 @@ def main(cfg: DictConfig) -> None:
         ],
         force=True,
     )
-    outputs = write_outputs(config)
+    outputs = workflow.write_grid_dataset_outputs(config)
     print(
         json.dumps(
             {name: str(path) for name, path in outputs.items()},

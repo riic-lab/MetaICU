@@ -85,7 +85,7 @@ joint:
   log_level: INFO
 
 # Optional small pooled debug subset, built from the just-written joint.output_dir once the full
-# joint build finishes (metaicu.joint_grid.assemble.write_debug_subset) -- same output-contract
+# joint build finishes (metaicu.joint_grid.debug_subset.write_debug_subset) -- same output-contract
 # shape as any other grid dataset dir. Per source cohort: every admission at/above that source's
 # own p(1-top_pct) los_hours quantile (the tail, always including the max), plus decile_frac of
 # the remainder sampled independently within each of that source's own n_deciles los_hours

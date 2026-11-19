@@ -67,10 +67,11 @@ def _write_cohort_output(
 
 
 class WriteDebugSubsetIntegrationTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        root = Path(self.tmp.name)
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.tmp.cleanup)
+        root = Path(cls.tmp.name)
 
         aumc_dir = root / "aumcdb_output"
         _write_cohort_output(
@@ -81,22 +82,22 @@ class WriteDebugSubsetIntegrationTests(unittest.TestCase):
             mimic_dir, n_admissions=60, los_hours_start=200
         )  # los_hours 200..259
 
-        self.joint_output_dir = root / "joint" / "output"
+        cls.joint_output_dir = root / "joint" / "output"
         write_joint_outputs(
             cohort_output_dirs={"aumcdb": aumc_dir, "mimic_iv": mimic_dir},
-            joint_output_dir=self.joint_output_dir,
+            joint_output_dir=cls.joint_output_dir,
             joint_audit_dir=root / "joint" / "audit",
             patients_per_file=1000,
             weights={"aumcdb": 0.5, "mimic_iv": 0.5},
             n_train_admissions_by_cohort={"aumcdb": 60, "mimic_iv": 60},
         )
 
-        self.debug_output_dir = root / "debug" / "output"
-        self.debug_audit_dir = root / "debug" / "audit"
-        self.outputs = write_debug_subset(
-            joint_output_dir=self.joint_output_dir,
-            output_dir=self.debug_output_dir,
-            audit_dir=self.debug_audit_dir,
+        cls.debug_output_dir = root / "debug" / "output"
+        cls.debug_audit_dir = root / "debug" / "audit"
+        cls.outputs = write_debug_subset(
+            joint_output_dir=cls.joint_output_dir,
+            output_dir=cls.debug_output_dir,
+            audit_dir=cls.debug_audit_dir,
             top_pct=0.1,
             decile_frac=0.1,
             n_deciles=5,
@@ -135,14 +136,11 @@ class WriteDebugSubsetIntegrationTests(unittest.TestCase):
 
     def test_shard_files_written_and_referenced_consistently(self) -> None:
         metadata = pl.read_csv(self.outputs["metadata"])
+        self.assertTrue(json.loads(self.outputs["integrity"].read_text())["passed"])
         self.assertTrue((self.debug_output_dir / "train" / "0.parquet").exists())
         shard = pl.read_parquet(self.debug_output_dir / "train" / "0.parquet")
         self.assertEqual(shard.height, metadata.height)
         self.assertEqual(set(metadata["shard_file"].to_list()), {"train/0.parquet"})
-
-    def test_integrity_audit_passes(self) -> None:
-        integrity = json.loads(self.outputs["integrity"].read_text())
-        self.assertTrue(integrity["passed"])
 
     def test_summary_reports_thresholds_and_warns_below_microbatch(self) -> None:
         summary = json.loads(self.outputs["summary"].read_text())
